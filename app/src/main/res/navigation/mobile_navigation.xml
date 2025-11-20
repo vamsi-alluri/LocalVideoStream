@@ -3,24 +3,24 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/mobile_navigation"
-    app:startDestination="@+id/nav_transform">
+    app:startDestination="@+id/nav_stream">
 
     <fragment
-        android:id="@+id/nav_transform"
-        android:name="com.PineApple.VideoStream.ui.transform.TransformFragment"
-        android:label="@string/menu_transform"
-        tools:layout="@layout/fragment_transform" />
+        android:id="@+id/nav_stream"
+        android:name="com.PineApple.VideoStream.ui.stream.StreamFragment"
+        android:label="@string/menu_stream"
+        tools:layout="@layout/fragment_stream" />
 
     <fragment
-        android:id="@+id/nav_reflow"
-        android:name="com.PineApple.VideoStream.ui.reflow.ReflowFragment"
-        android:label="@string/menu_reflow"
-        tools:layout="@layout/fragment_reflow" />
+        android:id="@+id/nav_watch"
+        android:name="com.PineApple.VideoStream.ui.watch.WatchFragment"
+        android:label="@string/menu_watch"
+        tools:layout="@layout/fragment_watch" />
 
     <fragment
-        android:id="@+id/nav_slideshow"
+        android:id="@+id/nav_settings1"
         android:name="com.PineApple.VideoStream.ui.slideshow.SlideshowFragment"
-        android:label="@string/menu_slideshow"
+        android:label="@string/menu_settings"
         tools:layout="@layout/fragment_slideshow" />
 
     <fragment
