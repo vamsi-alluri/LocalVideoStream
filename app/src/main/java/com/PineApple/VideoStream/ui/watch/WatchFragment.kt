@@ -55,29 +55,39 @@ class WatchFragment : Fragment() {
         return coroutineScope.launch {
             try {
                 Log.d("WatchFragment", "Connecting to $ip...")
-
-                // Connect to the Server (Phone 1) on Port 8080
                 val socket = Socket(ip, 8080)
-                val inputStream = socket.getInputStream()
 
-                // Basic loop to decode the stream
+                // Use DataInputStream to read the size integer
+                val dataInputStream = java.io.DataInputStream(socket.getInputStream())
+
                 while (isStreaming && isActive) {
-                    // BitmapFactory.decodeStream is smart enough to find the next JPEG in the stream
-                    val bitmap = BitmapFactory.decodeStream(inputStream)
+                    try {
+                        // 1. Read the size of the incoming image
+                        val imageSize = dataInputStream.readInt()
 
-                    if (bitmap != null) {
-                        // Switch to Main Thread to update UI
-                        withContext(Dispatchers.Main) {
-                            binding.videoView.setImageBitmap(bitmap)
+                        // 2. Create a buffer to hold exactly that many bytes
+                        val imageBytes = ByteArray(imageSize)
+
+                        // 3. Read the full image data into the buffer
+                        dataInputStream.readFully(imageBytes)
+
+                        // 4. Decode the bytes into a Bitmap
+                        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageSize)
+
+                        if (bitmap != null) {
+                            withContext(Dispatchers.Main) {
+                                binding.videoView.setImageBitmap(bitmap)
+                            }
                         }
-                    } else {
-                        break // Stream ended
+                    } catch (e: Exception) {
+                        Log.e("WatchFragment", "Stream lost: ${e.message}")
+                        break
                     }
                 }
                 socket.close()
 
             } catch (e: Exception) {
-                Log.e("WatchFragment", "Error: ${e.message}")
+                Log.e("WatchFragment", "Connection Error: ${e.message}")
                 withContext(Dispatchers.Main) {
                     Toast.makeText(requireContext(), "Connection Failed: ${e.message}", Toast.LENGTH_LONG).show()
                 }

@@ -102,34 +102,25 @@ class StreamFragment : Fragment() {
                 Log.d("StreamFragment", "Server started on port $serverPort")
 
                 while (true) {
-                    // Accept new client connection
                     val client = serverSocket?.accept()
                     Log.d("StreamFragment", "Client connected: ${client?.inetAddress}")
 
-                    // Write MJPEG Stream
                     client?.let { socket ->
                         try {
-                            val out = socket.getOutputStream()
-                            val boundary = "MJPEGBOUNDARY"
+                            // Use DataOutputStream to send primitive types (Int) easily
+                            val dataOutputStream = java.io.DataOutputStream(socket.getOutputStream())
 
-                            // Write Initial Header
-                            out.write(("HTTP/1.1 200 OK\r\n" +
-                                    "Content-Type: multipart/x-mixed-replace; boundary=$boundary\r\n" +
-                                    "\r\n").toByteArray())
-
-                            // Loop to send frames
                             while (!socket.isClosed) {
                                 val jpegData = currentJpeg
                                 if (jpegData != null) {
-                                    out.write(("--$boundary\r\n" +
-                                            "Content-Type: image/jpeg\r\n" +
-                                            "Content-Length: ${jpegData.size}\r\n" +
-                                            "\r\n").toByteArray())
-                                    out.write(jpegData)
-                                    out.write("\r\n".toByteArray())
-                                    out.flush()
+                                    // 1. Send the size of the image first
+                                    dataOutputStream.writeInt(jpegData.size)
+
+                                    // 2. Send the actual image data
+                                    dataOutputStream.write(jpegData)
+                                    dataOutputStream.flush()
                                 }
-                                Thread.sleep(100) // ~10 FPS limit to save bandwidth
+                                Thread.sleep(60) // ~15 FPS (Prevents network flooding)
                             }
                         } catch (e: Exception) {
                             Log.e("StreamFragment", "Client connection error: $e")
