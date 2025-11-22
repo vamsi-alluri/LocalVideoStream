@@ -196,7 +196,12 @@ class StreamFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
-        serverSocket?.close()
+        try {
+            // Close the server socket immediately to free the port
+            serverSocket?.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         cameraExecutor.shutdown()
         _binding = null
     }
