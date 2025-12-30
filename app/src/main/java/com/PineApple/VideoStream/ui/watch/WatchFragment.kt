@@ -1,35 +1,46 @@
 package com.PineApple.VideoStream.ui.watch
 
-import android.graphics.BitmapFactory
+import android.content.Context
+import android.content.SharedPreferences
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Toast
+import androidx.annotation.OptIn
 import androidx.fragment.app.Fragment
+import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
 import com.PineApple.VideoStream.databinding.FragmentWatchBinding
-import kotlinx.coroutines.*
-import java.net.Socket
 
 class WatchFragment : Fragment() {
 
-    // 1. Setup View Binding
     private var _binding: FragmentWatchBinding? = null
-    // This property is only valid between onCreateView and onDestroyView.
     private val binding get() = _binding!!
 
-    // 2. Setup Coroutines for Networking
-    private var streamJob: Job? = null
-    private val coroutineScope = CoroutineScope(Dispatchers.IO)
-    private var isStreaming = false
+    // Player
+    private var player: ExoPlayer? = null
+
+    // Discovery
+    private lateinit var nsdManager: NsdManager
+    private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private val availableSenders = mutableListOf<String>() // List of IPs/Names
+    private lateinit var spinnerAdapter: ArrayAdapter<String>
+
+    // Preferences for remembering last sender
+    private lateinit var prefs: SharedPreferences
+    private val PREF_LAST_IP = "last_connected_ip"
+
+    // Constants matching StreamFragment
+    private val SERVICE_TYPE = "_rtsp._tcp." // Must match the Sender's type
 
     override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
+        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View {
-        // Inflate using the Binding class
         _binding = FragmentWatchBinding.inflate(inflater, container, false)
         return binding.root
     }
@@ -37,73 +48,132 @@ class WatchFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        // 3. Access views directly using 'binding' (No findViewById needed!)
-        binding.connectButton.setOnClickListener {
-            val ip = binding.ipAddressInput.text.toString()
+        prefs = requireActivity().getSharedPreferences("VideoStreamPrefs", Context.MODE_PRIVATE)
 
-            if (ip.isNotBlank()) {
-                stopCurrentStream() // Reset if already running
-                isStreaming = true
-                streamJob = startViewing(ip)
+        setupSpinner()
+        startDiscovery()
+
+        binding.connectButton.setOnClickListener {
+            val selectedIp = binding.senderSpinner.selectedItem as? String
+
+            // Allow manual entry if needed, or fallback to spinner selection
+            val manualIp = binding.ipAddressInput.text.toString()
+            val targetIp = if (manualIp.isNotBlank()) manualIp else selectedIp
+
+            if (!targetIp.isNullOrBlank()) {
+                saveLastUsedIp(targetIp)
+                initializePlayer(targetIp)
             } else {
-                Toast.makeText(requireContext(), "Please enter an IP", Toast.LENGTH_SHORT).show()
+                Toast.makeText(requireContext(), "Select a sender or enter IP", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        // Pre-fill input with last used IP
+        val lastIp = prefs.getString(PREF_LAST_IP, "")
+        if (!lastIp.isNullOrEmpty()) {
+            binding.ipAddressInput.setText(lastIp)
         }
     }
 
-    private fun startViewing(ip: String): Job {
-        return coroutineScope.launch {
-            try {
-                Log.d("WatchFragment", "Connecting to $ip...")
-                val socket = Socket(ip, 8080)
+    // --- RTSP Player Logic ---
 
-                // Use DataInputStream to read the size integer
-                val dataInputStream = java.io.DataInputStream(socket.getInputStream())
+    @OptIn(UnstableApi::class)
+    private fun initializePlayer(ip: String) {
+        releasePlayer() // Clean up old player if exists
 
-                while (isStreaming && isActive) {
-                    try {
-                        // 1. Read the size of the incoming image
-                        val imageSize = dataInputStream.readInt()
+        player = ExoPlayer.Builder(requireContext()).build()
+        binding.playerView.player = player
 
-                        // 2. Create a buffer to hold exactly that many bytes
-                        val imageBytes = ByteArray(imageSize)
+        // Construct RTSP URL.
+        // RootEncoder defaults to valid RTSP endpoints at port 1935 (as defined in StreamFragment)
+        val rtspUrl = "rtsp://$ip:1935"
 
-                        // 3. Read the full image data into the buffer
-                        dataInputStream.readFully(imageBytes)
+        // Create MediaItem
+        val mediaItem = MediaItem.fromUri(rtspUrl)
 
-                        // 4. Decode the bytes into a Bitmap
-                        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageSize)
+        // While MediaItem.fromUri often works, explicitly using RtspMediaSource
+        // ensures ExoPlayer handles the protocol correctly if auto-detection fails.
+        // If you just use setMediaItem(mediaItem), ExoPlayer usually auto-detects RTSP based on the scheme.
+        player?.setMediaItem(mediaItem)
 
-                        if (bitmap != null) {
-                            withContext(Dispatchers.Main) {
-                                binding.videoView.setImageBitmap(bitmap)
+        player?.prepare()
+        player?.play()
+
+        Toast.makeText(requireContext(), "Connecting to $rtspUrl", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun releasePlayer() {
+        player?.release()
+        player = null
+    }
+
+    // --- Service Discovery Logic (NSD) ---
+
+    private fun setupSpinner() {
+        spinnerAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, availableSenders)
+        spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.senderSpinner.adapter = spinnerAdapter
+    }
+
+    private fun startDiscovery() {
+        nsdManager = requireContext().getSystemService(Context.NSD_SERVICE) as NsdManager
+
+        discoveryListener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(regType: String) {}
+            override fun onServiceFound(service: NsdServiceInfo) {
+                // Ensure this is our service type
+                if (service.serviceType.contains("_rtsp")) {
+                    nsdManager.resolveService(service, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {}
+                        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                            val hostIp = serviceInfo.host.hostAddress ?: return
+
+                            requireActivity().runOnUiThread {
+                                if (!availableSenders.contains(hostIp)) {
+                                    availableSenders.add(hostIp)
+                                    spinnerAdapter.notifyDataSetChanged()
+
+                                    // Auto-select if it matches last used
+                                    val lastIp = prefs.getString(PREF_LAST_IP, "")
+                                    if (hostIp == lastIp) {
+                                        binding.senderSpinner.setSelection(availableSenders.indexOf(hostIp))
+                                    }
+                                }
                             }
                         }
-                    } catch (e: Exception) {
-                        Log.e("WatchFragment", "Stream lost: ${e.message}")
-                        break
-                    }
-                }
-                socket.close()
-
-            } catch (e: Exception) {
-                Log.e("WatchFragment", "Connection Error: ${e.message}")
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(requireContext(), "Connection Failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    })
                 }
             }
+            override fun onServiceLost(service: NsdServiceInfo) {
+                // Optional: Remove from list if lost
+            }
+            override fun onDiscoveryStopped(serviceType: String) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+        }
+
+        // Look for RTSP services
+        try {
+            nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
-    private fun stopCurrentStream() {
-        isStreaming = false
-        streamJob?.cancel()
+    private fun saveLastUsedIp(ip: String) {
+        prefs.edit().putString(PREF_LAST_IP, ip).apply()
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
-        // 4. Clean up Binding and Background Jobs to prevent memory leaks
-        stopCurrentStream()
+        releasePlayer()
+        discoveryListener?.let {
+            try {
+                nsdManager.stopServiceDiscovery(it)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
         _binding = null
     }
 }

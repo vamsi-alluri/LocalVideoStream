@@ -53,6 +53,15 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
+    // ExoPlayer for playing RTMP streams
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+    // If you need specific RTMP data source support (sometimes needed depending on server type)
+    implementation(libs.androidx.media3.datasource.rtmp)
+    // RootEncoder: Handles Camera, Audio, and RTSP Server logic
+    implementation(libs.library)
+    implementation(libs.androidx.media3.exoplayer.rtsp)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

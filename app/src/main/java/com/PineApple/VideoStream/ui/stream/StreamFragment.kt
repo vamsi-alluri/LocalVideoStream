@@ -3,46 +3,54 @@ package com.PineApple.VideoStream.ui.stream
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
-import android.net.wifi.WifiManager
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
-import android.text.format.Formatter
-import android.util.Log
 import android.view.LayoutInflater
+import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Toast
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.activity.addCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import com.PineApple.VideoStream.databinding.FragmentStreamBinding
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
-import java.net.ServerSocket
-import java.util.concurrent.Executors
+import com.pedro.common.ConnectCheckerRtsp
+import com.pedro.library.rtsp.RtspServerCamera2
+import java.net.Inet4Address
 
-class StreamFragment : Fragment() {
+class StreamFragment : Fragment(), ConnectCheckerRtsp {
 
     private var _binding: FragmentStreamBinding? = null
     private val binding get() = _binding!!
 
-    // Network & Camera variables
-    private val serverPort = 8080
-    private var serverSocket: ServerSocket? = null
-    private var currentJpeg: ByteArray? = null // Stores the latest frame to send
-    private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private lateinit var rtspServerCamera2: RtspServerCamera2
+
+    // NSD (Network Service Discovery) variables
+    private lateinit var nsdManager: NsdManager
+    private var registrationListener: NsdManager.RegistrationListener? = null
+    private val SERVICE_NAME = "PineAppleStream"
+    private val SERVICE_TYPE = "_rtsp._tcp" // Standard RTSP service type
+    private val PORT = 1935
+
+    // Permission Launcher
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            if (permissions.all { it.value }) {
+                startPreview()
+            } else {
+                Toast.makeText(context, "Permissions required to stream", Toast.LENGTH_SHORT).show()
+            }
+        }
 
     override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?,
-        savedInstanceState: Bundle?
+        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View {
         _binding = FragmentStreamBinding.inflate(inflater, container, false)
         return binding.root
@@ -51,158 +59,216 @@ class StreamFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        // 1. Check Permissions
-        if (allPermissionsGranted()) {
-            startCamera()
-            startServer()
-            displayIpAddress()
-        } else {
-            Toast.makeText(requireContext(), "Camera permission required", Toast.LENGTH_LONG).show()
+        // Keep screen on while streaming
+        requireActivity().window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Initialize the Server Camera
+        rtspServerCamera2 = RtspServerCamera2(binding.surfaceView, this, PORT)
+
+        // Setup UI
+        setupSurfaceView()
+        displayIpAddress()
+
+        // We will add a floating button or use the existing layout to trigger stream/switch
+        // Since your XML only showed the IP text, I'll assume you might want to tap the screen or add buttons dynamically
+        // checking if you have buttons in XML not shown in snippet, if not, adding click listeners to the view itself
+        binding.surfaceView.setOnClickListener {
+            if (rtspServerCamera2.isStreaming) {
+                stopStream()
+            } else {
+                startStream()
+            }
         }
-    }
 
-    private fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext())
-
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-
-            // Preview Use Case (Shows camera on screen)
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
-            }
-
-            // Analysis Use Case (Gets frames for streaming)
-            val imageAnalyzer = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .also {
-                    it.setAnalyzer(cameraExecutor) { imageProxy ->
-                        // Convert YUV frame to JPEG Byte Array
-                        currentJpeg = imageProxyToJpeg(imageProxy)
-                        imageProxy.close()
-                    }
-                }
-
+        // Add a long click to switch cameras
+        binding.surfaceView.setOnLongClickListener {
             try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalyzer
-                )
-            } catch (exc: Exception) {
-                Log.e("StreamFragment", "Use case binding failed", exc)
-            }
-        }, ContextCompat.getMainExecutor(requireContext()))
-    }
-
-    private fun startServer() {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                serverSocket = ServerSocket(serverPort)
-                Log.d("StreamFragment", "Server started on port $serverPort")
-
-                while (true) {
-                    val client = serverSocket?.accept()
-                    Log.d("StreamFragment", "Client connected: ${client?.inetAddress}")
-
-                    client?.let { socket ->
-                        try {
-                            // Use DataOutputStream to send primitive types (Int) easily
-                            val dataOutputStream = java.io.DataOutputStream(socket.getOutputStream())
-
-                            while (!socket.isClosed) {
-                                val jpegData = currentJpeg
-                                if (jpegData != null) {
-                                    // 1. Send the size of the image first
-                                    dataOutputStream.writeInt(jpegData.size)
-
-                                    // 2. Send the actual image data
-                                    dataOutputStream.write(jpegData)
-                                    dataOutputStream.flush()
-                                }
-                                Thread.sleep(60) // ~15 FPS (Prevents network flooding)
-                            }
-                        } catch (e: Exception) {
-                            Log.e("StreamFragment", "Client connection error: $e")
-                        } finally {
-                            socket.close()
-                        }
-                    }
-                }
+                rtspServerCamera2.switchCamera()
+                Toast.makeText(context, "Switched Camera", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
-                Log.e("StreamFragment", "Server Error: $e")
+                Toast.makeText(context, "Cannot switch camera: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+            true
+        }
+
+        checkPermissions()
+    }
+
+    private fun setupSurfaceView() {
+        binding.surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                // Determine layout logic if needed
+            }
+
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                rtspServerCamera2.startPreview()
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                if (rtspServerCamera2.isStreaming) {
+                    rtspServerCamera2.stopStream()
+                }
+                rtspServerCamera2.stopPreview()
+            }
+        })
+    }
+
+    private fun checkPermissions() {
+        val permissions = arrayOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.INTERNET,
+            Manifest.permission.ACCESS_WIFI_STATE
+        )
+
+        val allGranted = permissions.all {
+            ContextCompat.checkSelfPermission(requireContext(), it) == PackageManager.PERMISSION_GRANTED
+        }
+
+        if (allGranted) {
+            startPreview()
+        } else {
+            requestPermissionLauncher.launch(permissions)
+        }
+    }
+
+    private fun startPreview() {
+        if (!rtspServerCamera2.isOnPreview) {
+            // Configure default video settings (Width, Height, FPS, Bitrate, Rotation)
+            // 1280x720 is a safe default for most phones
+            rtspServerCamera2.prepareVideo(1280, 720, 30, 1200 * 1024, 90)
+            rtspServerCamera2.prepareAudio()
+            rtspServerCamera2.startPreview()
+        }
+    }
+
+    private fun startStream() {
+        if (!rtspServerCamera2.isStreaming) {
+            if (rtspServerCamera2.prepareAudio() && rtspServerCamera2.prepareVideo()) {
+                rtspServerCamera2.startStream()
+                registerService(PORT)
+                binding.ipAddressText.setTextColor(ContextCompat.getColor(requireContext(), android.R.color.holo_red_light))
+                Toast.makeText(context, "Server Started", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Error preparing stream, this device can't do it", Toast.LENGTH_SHORT).show()
             }
         }
     }
+
+    private fun stopStream() {
+        if (rtspServerCamera2.isStreaming) {
+            rtspServerCamera2.stopStream()
+            unregisterService()
+            binding.ipAddressText.setTextColor(ContextCompat.getColor(requireContext(), android.R.color.holo_green_light))
+            Toast.makeText(context, "Server Stopped", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // --- Networking & IP Display ---
 
     private fun displayIpAddress() {
-        val wifiManager = requireContext().getSystemService(Context.WIFI_SERVICE) as WifiManager
-        val ipAddress = Formatter.formatIpAddress(wifiManager.connectionInfo.ipAddress)
-        binding.ipAddressText.text = "$ipAddress" // e.g., 192.168.1.5
-    }
+        val cm = requireContext().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val activeNetwork: Network? = cm.activeNetwork
+        val caps: NetworkCapabilities? = cm.getNetworkCapabilities(activeNetwork)
+        val linkProperties: LinkProperties? = cm.getLinkProperties(activeNetwork)
 
-    // Helper: Convert CameraX ImageProxy to JPEG ByteArray
-    private fun imageProxyToJpeg(image: ImageProxy): ByteArray? {
-        val yBuffer = image.planes[0].buffer // Y
-        val uBuffer = image.planes[1].buffer // U
-        val vBuffer = image.planes[2].buffer // V
+        var ip = "No IP Found"
 
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + uSize + vSize)
-
-        // Copy Y
-        yBuffer.get(nv21, 0, ySize)
-
-        // Copy UV (NV21 format expects V then U interwoven)
-        val u = ByteArray(uSize)
-        val v = ByteArray(vSize)
-        uBuffer.get(u)
-        vBuffer.get(v)
-
-        // This is a simplified conversion for NV21
-        // Standard NV21: YYYYYYYY VU VU VU VU
-        // Note: ImageProxy stride handling can be complex; this is a basic implementation
-        // suitable for full-frame standard camera buffers.
-
-        // For accurate interleaving of U and V:
-        var pixel = 0
-        for (i in 0 until uSize) {
-            // We are approximating here for simplicity in this snippet.
-            // Real NV21 interleaving depends on pixel stride.
-            // If pixelStride == 2, the byte buffer already contains interwoven data.
-            if(image.planes[1].pixelStride == 2) {
-                // If pixel stride is 2, the V buffer effectively covers both
-                vBuffer.position(0)
-                vBuffer.get(nv21, ySize, vSize)
-                break
+        if (caps != null && (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))) {
+            linkProperties?.linkAddresses?.forEach { linkAddress ->
+                val address = linkAddress.address
+                if (address is Inet4Address && !address.isLoopbackAddress) {
+                    ip = address.hostAddress ?: ip
+                }
             }
         }
 
-        // Fallback: Convert using YuvImage
-        // To be absolutely safe without complex stride math manually:
-        // We can use the Y buffer + V buffer logic if pixelStride is 2 (common on Android)
-
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-        val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 70, out)
-        return out.toByteArray()
+        binding.ipAddressText.text = ip
     }
 
-    private fun allPermissionsGranted() = ContextCompat.checkSelfPermission(
-        requireContext(), Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    // --- NSD Registration (So WatchFragment can find us) ---
+
+    private fun registerService(port: Int) {
+        nsdManager = requireContext().getSystemService(Context.NSD_SERVICE) as NsdManager
+
+        val serviceInfo = NsdServiceInfo().apply {
+            serviceName = SERVICE_NAME
+            serviceType = SERVICE_TYPE
+            setPort(port)
+        }
+
+        registrationListener = object : NsdManager.RegistrationListener {
+            override fun onServiceRegistered(NsdServiceInfo: NsdServiceInfo) {
+                val mServiceName = NsdServiceInfo.serviceName
+                activity?.runOnUiThread {
+                    Toast.makeText(context, "Service Registered: $mServiceName", Toast.LENGTH_SHORT).show()
+                }
+            }
+            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                // Registration failed
+            }
+            override fun onServiceUnregistered(arg0: NsdServiceInfo) {}
+            override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {}
+        }
+
+        nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+    }
+
+    private fun unregisterService() {
+        registrationListener?.let {
+            try {
+                nsdManager.unregisterService(it)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // --- ConnectCheckerRtsp Callbacks ---
+
+    override fun onConnectionSuccessRtsp() {
+        activity?.runOnUiThread {
+            Toast.makeText(context, "Client Connected", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onConnectionFailedRtsp(reason: String) {
+        activity?.runOnUiThread {
+            stopStream()
+            Toast.makeText(context, "Connection Failed: $reason", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onNewBitrateRtsp(bitrate: Long) {
+        // Optional: Update UI with bitrate
+    }
+
+    override fun onDisconnectRtsp() {
+        activity?.runOnUiThread {
+            Toast.makeText(context, "Client Disconnected", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onAuthErrorRtsp() {
+        activity?.runOnUiThread {
+            Toast.makeText(context, "Auth Error", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onAuthSuccessRtsp() {
+        activity?.runOnUiThread {
+            Toast.makeText(context, "Auth Success", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     override fun onDestroyView() {
         super.onDestroyView()
-        try {
-            // Close the server socket immediately to free the port
-            serverSocket?.close()
-        } catch (e: Exception) {
-            e.printStackTrace()
+        if (rtspServerCamera2.isStreaming) {
+            rtspServerCamera2.stopStream()
+            unregisterService()
         }
-        cameraExecutor.shutdown()
+        rtspServerCamera2.stopPreview()
+        requireActivity().window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         _binding = null
     }
 }
