@@ -4,19 +4,43 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context="ui.watch.WatchFragment">
+    tools:context=".ui.watch.WatchFragment">
+
+    <TextView
+        android:id="@+id/manualInputLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        android:text="Manual Connection:"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
 
     <EditText
         android:id="@+id/ipAddressInput"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_margin="16dp"
-        android:hint="Enter IP (e.g., 192.168.1.5)"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="8dp"
+        android:hint="IP Address"
         android:inputType="text"
         android:digits="0123456789."
-        app:layout_constraintEnd_toStartOf="@+id/connectButton"
+        app:layout_constraintEnd_toStartOf="@+id/portInput"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:layout_constraintTop_toBottomOf="@+id/manualInputLabel" />
+
+    <EditText
+        android:id="@+id/portInput"
+        android:layout_width="80dp"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="8dp"
+        android:hint="Port"
+        android:inputType="number"
+        android:text="12600"
+        app:layout_constraintBottom_toBottomOf="@+id/ipAddressInput"
+        app:layout_constraintEnd_toStartOf="@+id/connectButton"
+        app:layout_constraintTop_toTopOf="@+id/ipAddressInput" />
 
     <Button
         android:id="@+id/connectButton"
@@ -32,18 +56,30 @@
         android:id="@+id/playerView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        app:layout_constraintBottom_toTopOf="@id/connectButton"
-        app:layout_constraintTop_toTopOf="parent"
-        app:use_controller="false" /> <!-- Hide play/pause controls for live stream -->
+        android:layout_marginTop="16dp"
+        android:layout_marginBottom="16dp"
+        app:layout_constraintBottom_toTopOf="@id/availableStreamsLabel"
+        app:layout_constraintTop_toBottomOf="@id/ipAddressInput"
+        app:use_controller="false" />
 
-    <!-- Add a Spinner or RecyclerView for the sender list -->
+    <TextView
+        android:id="@+id/availableStreamsLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="8dp"
+        android:text="Available Streams:"
+        android:textStyle="bold"
+        app:layout_constraintBottom_toTopOf="@id/senderSpinner"
+        app:layout_constraintStart_toStartOf="parent" />
+
     <Spinner
         android:id="@+id/senderSpinner"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        app:layout_constraintBottom_toTopOf="@id/connectButton"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        android:layout_margin="16dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

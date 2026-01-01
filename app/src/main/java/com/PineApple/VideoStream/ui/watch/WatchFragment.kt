@@ -5,42 +5,36 @@ import android.content.SharedPreferences
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.ArrayAdapter
-import android.widget.Toast
+import android.util.Log
+import android.view.*
+import android.widget.*
 import androidx.annotation.OptIn
 import androidx.fragment.app.Fragment
-import androidx.media3.common.MediaItem
+import androidx.media3.common.*
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import com.PineApple.VideoStream.databinding.FragmentWatchBinding
 
 class WatchFragment : Fragment() {
 
+    private val TAG = "WatchFragment"
     private var _binding: FragmentWatchBinding? = null
     private val binding get() = _binding!!
 
-    // Player
     private var player: ExoPlayer? = null
-
-    // Discovery
     private lateinit var nsdManager: NsdManager
     private var discoveryListener: NsdManager.DiscoveryListener? = null
-    private val availableSenders = mutableListOf<String>() // List of IPs/Names
+
+    private val availableSenders = mutableListOf<String>() // Format "IP:Port"
     private lateinit var spinnerAdapter: ArrayAdapter<String>
+    private val SERVICE_TYPE = "_rtsp._tcp"
 
-    // Preferences for remembering last sender
-    private lateinit var prefs: SharedPreferences
-    private val PREF_LAST_IP = "last_connected_ip"
+    private lateinit var sharedPreferences: SharedPreferences
+    private var useUdp = true
+    private var isFallbackAttempt = false
 
-    // Constants matching StreamFragment
-    private val SERVICE_TYPE = "_rtsp._tcp." // Must match the Sender's type
-
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentWatchBinding.inflate(inflater, container, false)
         return binding.root
     }
@@ -48,132 +42,132 @@ class WatchFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        prefs = requireActivity().getSharedPreferences("VideoStreamPrefs", Context.MODE_PRIVATE)
+        sharedPreferences = requireContext().getSharedPreferences("VideoStreamPrefs", Context.MODE_PRIVATE)
+        useUdp = sharedPreferences.getBoolean("pref_udp_enabled", true)
 
-        setupSpinner()
-        startDiscovery()
-
-        binding.connectButton.setOnClickListener {
-            val selectedIp = binding.senderSpinner.selectedItem as? String
-
-            // Allow manual entry if needed, or fallback to spinner selection
-            val manualIp = binding.ipAddressInput.text.toString()
-            val targetIp = if (manualIp.isNotBlank()) manualIp else selectedIp
-
-            if (!targetIp.isNullOrBlank()) {
-                saveLastUsedIp(targetIp)
-                initializePlayer(targetIp)
-            } else {
-                Toast.makeText(requireContext(), "Select a sender or enter IP", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        // Pre-fill input with last used IP
-        val lastIp = prefs.getString(PREF_LAST_IP, "")
-        if (!lastIp.isNullOrEmpty()) {
-            binding.ipAddressInput.setText(lastIp)
-        }
-    }
-
-    // --- RTSP Player Logic ---
-
-    @OptIn(UnstableApi::class)
-    private fun initializePlayer(ip: String) {
-        releasePlayer() // Clean up old player if exists
-
-        player = ExoPlayer.Builder(requireContext()).build()
-        binding.playerView.player = player
-
-        // Construct RTSP URL.
-        // RootEncoder defaults to valid RTSP endpoints at port 1935 (as defined in StreamFragment)
-        val rtspUrl = "rtsp://$ip:1935"
-
-        // Create MediaItem
-        val mediaItem = MediaItem.fromUri(rtspUrl)
-
-        // While MediaItem.fromUri often works, explicitly using RtspMediaSource
-        // ensures ExoPlayer handles the protocol correctly if auto-detection fails.
-        // If you just use setMediaItem(mediaItem), ExoPlayer usually auto-detects RTSP based on the scheme.
-        player?.setMediaItem(mediaItem)
-
-        player?.prepare()
-        player?.play()
-
-        Toast.makeText(requireContext(), "Connecting to $rtspUrl", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun releasePlayer() {
-        player?.release()
-        player = null
-    }
-
-    // --- Service Discovery Logic (NSD) ---
-
-    private fun setupSpinner() {
         spinnerAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, availableSenders)
         spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.senderSpinner.adapter = spinnerAdapter
+
+        binding.senderSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (binding.ipAddressInput.text.toString().trim().isEmpty()) {
+                    val selected = availableSenders[position]
+                    Log.d(TAG, "Auto-connecting to selected stream: $selected")
+                    isFallbackAttempt = false // Reset fallback on new selection
+                    initializePlayer(selected)
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        startDiscovery()
+
+        binding.connectButton.setOnClickListener {
+            val selection = binding.senderSpinner.selectedItem as? String
+            val manualIp = binding.ipAddressInput.text.toString()
+            val manualPort = binding.portInput.text.toString()
+
+            val target = if (manualIp.isNotBlank()) {
+                if (manualIp.contains(":")) manualIp else "$manualIp:${manualPort.ifBlank { "12600" }}"
+            } else selection
+
+            if (!target.isNullOrBlank()) {
+                Log.d(TAG, "Connect button clicked. Target: $target")
+                isFallbackAttempt = false // Reset fallback on manual connect
+                initializePlayer(target)
+            } else {
+                 Toast.makeText(context, "Please select a stream or enter IP", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun initializePlayer(ipPort: String) {
+        val transport = if (useUdp && !isFallbackAttempt) "UDP" else "TCP"
+        Log.d(TAG, "Initializing player for: $ipPort (Transport: $transport)")
+        Toast.makeText(context, "Connecting via $transport...", Toast.LENGTH_SHORT).show()
+        
+        player?.release()
+        player = ExoPlayer.Builder(requireContext()).build().apply {
+            binding.playerView.player = this
+
+            val cleanIpPort = ipPort.replace("rtsp://", "").replace("/live", "")
+            val rtspUrl = "rtsp://$cleanIpPort/live"
+            
+            Log.d(TAG, "Playing RTSP URI: $rtspUrl")
+
+            val mediaSource = RtspMediaSource.Factory()
+                .setForceUseRtpTcp(transport == "TCP")
+                .setTimeoutMs(10000)
+                .setDebugLoggingEnabled(true)
+                .createMediaSource(MediaItem.fromUri(rtspUrl))
+
+            setMediaSource(mediaSource)
+            
+            addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    Log.e(TAG, "Player Error: ${error.errorCodeName}", error)
+                    
+                    // If UDP fails with a network error, try falling back to TCP
+                    if (useUdp && !isFallbackAttempt && error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED) {
+                        Log.w(TAG, "UDP connection failed, falling back to TCP.")
+                        isFallbackAttempt = true
+                        initializePlayer(ipPort)
+                    } else {
+                        val cause = error.cause?.message ?: error.message
+                        Toast.makeText(context, "Connection Failed: $cause", Toast.LENGTH_LONG).show()
+                    }
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    when (playbackState) {
+                        Player.STATE_BUFFERING -> Log.d(TAG, "Player State: Buffering")
+                        Player.STATE_READY -> Log.d(TAG, "Player State: Ready - Playing")
+                        Player.STATE_ENDED -> Log.d(TAG, "Player State: Ended")
+                        Player.STATE_IDLE -> Log.d(TAG, "Player State: Idle")
+                    }
+                }
+            })
+
+            prepare()
+            playWhenReady = true
+        }
     }
 
     private fun startDiscovery() {
+        Log.d(TAG, "Starting NSD Discovery")
         nsdManager = requireContext().getSystemService(Context.NSD_SERVICE) as NsdManager
-
         discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(regType: String) {}
             override fun onServiceFound(service: NsdServiceInfo) {
-                // Ensure this is our service type
-                if (service.serviceType.contains("_rtsp")) {
-                    nsdManager.resolveService(service, object : NsdManager.ResolveListener {
-                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {}
-                        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                            val hostIp = serviceInfo.host.hostAddress ?: return
-
-                            requireActivity().runOnUiThread {
-                                if (!availableSenders.contains(hostIp)) {
-                                    availableSenders.add(hostIp)
+                if (service.serviceType.contains("_rtsp._tcp")) {
+                     nsdManager.resolveService(service, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(si: NsdServiceInfo, err: Int) {}
+                        override fun onServiceResolved(si: NsdServiceInfo) {
+                            val entry = "${si.host.hostAddress}:${si.port}"
+                            activity?.runOnUiThread {
+                                if (!availableSenders.contains(entry)) {
+                                    availableSenders.add(entry)
                                     spinnerAdapter.notifyDataSetChanged()
-
-                                    // Auto-select if it matches last used
-                                    val lastIp = prefs.getString(PREF_LAST_IP, "")
-                                    if (hostIp == lastIp) {
-                                        binding.senderSpinner.setSelection(availableSenders.indexOf(hostIp))
-                                    }
                                 }
                             }
                         }
                     })
                 }
             }
-            override fun onServiceLost(service: NsdServiceInfo) {
-                // Optional: Remove from list if lost
-            }
-            override fun onDiscoveryStopped(serviceType: String) {}
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
-            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+            override fun onServiceLost(s: NsdServiceInfo) {}
+            override fun onDiscoveryStopped(s: String) {}
+            override fun onStartDiscoveryFailed(s: String, e: Int) {}
+            override fun onStopDiscoveryFailed(s: String, e: Int) {}
         }
-
-        // Look for RTSP services
-        try {
-            nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun saveLastUsedIp(ip: String) {
-        prefs.edit().putString(PREF_LAST_IP, ip).apply()
+        nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
-        releasePlayer()
-        discoveryListener?.let {
-            try {
-                nsdManager.stopServiceDiscovery(it)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        player?.release()
+        discoveryListener?.let { nsdManager.stopServiceDiscovery(it) }
         _binding = null
     }
 }

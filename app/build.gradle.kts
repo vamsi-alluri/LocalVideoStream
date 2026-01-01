@@ -17,6 +17,13 @@ android {
         versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        externalNativeBuild {
+            cmake {
+                // Forces the linker to use 16 KB alignment for any native code you compile
+                arguments += "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
+            }
+        }
     }
 
     buildTypes {
@@ -26,6 +33,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+    }
+    packaging {
+        jniLibs {
+            // This forces the packaging of .so files to be aligned
+            // to 16 KB boundaries, making them compatible with 16 KB devices.
+            useLegacyPackaging = false
         }
     }
     compileOptions {
@@ -65,4 +79,7 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    implementation("com.github.pedroSG94:RTSP-Server:Tag")
+    implementation("com.github.pedroSG94:RTSP-Server:1.3.6")
+    implementation("com.github.pedroSG94.RootEncoder:library:2.6.1")
 }
